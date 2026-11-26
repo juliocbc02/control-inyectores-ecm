@@ -1,3 +1,4 @@
+
 `default_nettype none
 
 //======================================================
@@ -43,7 +44,7 @@ module tt_um_control_inyectores (
         .bomba(bomba)
     );
 
-    // Salidas
+    // Salidas del ECM
     assign uo_out[0] = iny1;
     assign uo_out[1] = iny2;
     assign uo_out[2] = iny3;
@@ -55,8 +56,13 @@ module tt_um_control_inyectores (
     assign uio_out = 8'b00000000;
     assign uio_oe  = 8'b00000000;
 
-    wire _unused = &{ena, ui_in[7:2],
-                     uio_in, 1'b0};
+    // Entradas no utilizadas
+    wire _unused = &{
+        ena,
+        ui_in[7:2],
+        uio_in,
+        1'b0
+    };
 
 endmodule
 
@@ -80,22 +86,25 @@ module control_inyectores #(
 );
 
     //==================================================
-    // TEMPORIZADORES A 50 MHz
+    // TEMPORIZADORES
     //==================================================
 
-    // Inyeccion: 3 ms
+    // Inyeccion de 3 ms
     localparam integer T_INYECCION =
         (CLK_HZ / 1000) * 3;
 
-    // Cebado: 2 segundos
+    // Cebado de bomba durante 2 segundos
     localparam integer T_CEBADO =
         2 * CLK_HZ;
 
-    // Ausencia CKP: 3 segundos
+    // Ausencia de CKP durante 3 segundos
     localparam integer T_SIN_CKP =
         3 * CLK_HZ;
 
-    // Anchos de contadores
+    //==================================================
+    // ANCHOS DE CONTADORES
+    //==================================================
+
     localparam integer W_INY =
         (T_INYECCION > 1) ?
         $clog2(T_INYECCION + 1) : 1;
@@ -109,7 +118,23 @@ module control_inyectores #(
         $clog2(T_SIN_CKP + 1) : 1;
 
     //==================================================
-    // SINCRONIZACION CKP
+    // CONSTANTES AJUSTADAS AL ANCHO DE LOS CONTADORES
+    //==================================================
+
+    // 150000 ciclos a 50 MHz = 3 ms
+    localparam [W_INY-1:0] T_INY_AJUSTADO =
+        W_INY'(T_INYECCION);
+
+    // 100000000 ciclos a 50 MHz = 2 s
+    localparam [W_CEBADO-1:0] LIM_CEBADO =
+        W_CEBADO'(T_CEBADO - 1);
+
+    // 150000000 ciclos a 50 MHz = 3 s
+    localparam [W_SINCKP-1:0] LIM_SINCKP =
+        W_SINCKP'(T_SIN_CKP - 1);
+
+    //==================================================
+    // SINCRONIZACION DE CKP
     //==================================================
 
     reg ckp_meta;
@@ -172,18 +197,22 @@ module control_inyectores #(
 
         if (!Star) begin
 
+            // Reinicio del sincronizador CKP
             ckp_meta         <= 1'b0;
             ckp_sync         <= 1'b0;
             ckp_anterior     <= 1'b0;
 
+            // Reinicio de secuencia
             contador_ckp     <= 5'd0;
             turno            <= 2'd0;
 
+            // Reinicio de temporizadores
             tiempo_iny1      <= 0;
             tiempo_iny2      <= 0;
             tiempo_iny3      <= 0;
             tiempo_iny4      <= 0;
 
+            // Reinicio de bomba
             contador_sin_ckp <= 0;
             ckp_vigente      <= 1'b0;
 
@@ -193,12 +222,18 @@ module control_inyectores #(
 
         end else begin
 
-            // Sincronizar CKP
+            //==========================================
+            // SINCRONIZACION CKP
+            //==========================================
+
             ckp_meta     <= ckp;
             ckp_sync     <= ckp_meta;
             ckp_anterior <= ckp_sync;
 
-            // Temporizadores de inyeccion
+            //==========================================
+            // TEMPORIZADORES DE INYECCION
+            //==========================================
+
             if (tiempo_iny1 != 0)
                 tiempo_iny1 <= tiempo_iny1 - 1'b1;
 
@@ -211,7 +246,10 @@ module control_inyectores #(
             if (tiempo_iny4 != 0)
                 tiempo_iny4 <= tiempo_iny4 - 1'b1;
 
-            // Secuencia cada 30 pulsos CKP
+            //==========================================
+            // SECUENCIA CADA 30 PULSOS CKP
+            //==========================================
+
             if (pulso_ckp) begin
 
                 if (contador_ckp == 5'd29) begin
@@ -221,16 +259,16 @@ module control_inyectores #(
                     case (turno)
 
                         2'd0:
-                            tiempo_iny1 <= T_INYECCION;
+                            tiempo_iny1 <= T_INY_AJUSTADO;
 
                         2'd1:
-                            tiempo_iny2 <= T_INYECCION;
+                            tiempo_iny2 <= T_INY_AJUSTADO;
 
                         2'd2:
-                            tiempo_iny3 <= T_INYECCION;
+                            tiempo_iny3 <= T_INY_AJUSTADO;
 
                         2'd3:
-                            tiempo_iny4 <= T_INYECCION;
+                            tiempo_iny4 <= T_INY_AJUSTADO;
 
                     endcase
 
@@ -243,7 +281,10 @@ module control_inyectores #(
                 end
             end
 
-            // Actividad CKP y control de bomba
+            //==========================================
+            // CONTROL DE ACTIVIDAD CKP
+            //==========================================
+
             if (pulso_ckp) begin
 
                 contador_sin_ckp <= 0;
@@ -251,8 +292,7 @@ module control_inyectores #(
 
             end else if (ckp_vigente) begin
 
-                if (contador_sin_ckp >=
-                    T_SIN_CKP - 1) begin
+                if (contador_sin_ckp >= LIM_SINCKP) begin
 
                     contador_sin_ckp <= 0;
                     ckp_vigente      <= 1'b0;
@@ -265,7 +305,10 @@ module control_inyectores #(
                 end
             end
 
-            // Cebado de bomba durante 2 segundos
+            //==========================================
+            // CEBADO DE BOMBA
+            //==========================================
+
             if (!iniciado) begin
 
                 iniciado        <= 1'b1;
@@ -274,8 +317,7 @@ module control_inyectores #(
 
             end else if (cebado) begin
 
-                if (contador_cebado >=
-                    T_CEBADO - 1) begin
+                if (contador_cebado >= LIM_CEBADO) begin
 
                     cebado <= 1'b0;
 
